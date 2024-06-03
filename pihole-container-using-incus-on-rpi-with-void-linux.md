@@ -1,23 +1,14 @@
-# How to configure pihole w/ unbound in an incus container on the rasberry pi
+## How to configure pihole w/ unbound in an incus container on the rasberry pi
 -----------------------------------------------------------------------------
 
 Note: i compile my own custom void linux image for the rpi that includes incus and some other tweaks. [1]
 
-## Create a new debian container using incus and run the pihole self installer inside the container
+### Method 1: Default networking 
+--------------------------------
 
 1. create a new debian container - call it pihole
 ```
   incus launch images:debian/bookworm/cloud pihole
-  incus list
-
-  # show the container logs
-  incus info pihole --show-log
-  incus console pihole --show-log
-```
-
-2. setup systemd mount (my void linux host doesn't use systemd, so we sort of fake it)
-```
-  doas mkdir -p /sys/fs/cgroup/systemd && doas mount -t cgroup cgroup -o none,name=systemd /sys/fs/cgroup/systemd
 ```
 
 3. enter the container and install pihole 
@@ -32,14 +23,10 @@ Note: i compile my own custom void linux image for the rpi that includes incus a
 ```
 
 4. Forward DNS traffic to the container
-
-Note this assumes the default bridge incusbr0 is being used. 
-Also note macvlan is not supported when using wifi.
+Note this assumes the default bridge incusbr0 is being used.  
 ```  
   # incus network forward create <network> <listen-address>
   incus network forward create incusbr0 192.168.22.25
-
-  # incus network forward port add <network> <listen-address> <proto> <port> <target address> <target port>
   incus network forward port add incusbr0 192.168.22.25 tcp 53 10.86.130.228 53
   incus network forward port add incusbr0 192.168.22.25 udp 53 10.86.130.228 53
   incus network forward port add incusbr0 192.168.22.25 tcp 8080 10.86.130.228 80
@@ -51,6 +38,34 @@ Also note macvlan is not supported when using wifi.
   incus snapshot list pihole
 ```
 
+---
+
+### Method 2: Macvlan networking
+--------------------------------
+
+```
+[void@rpi-74f50651 ~]$ incus launch images:ubuntu/noble pihole --network macvlan
+[void@rpi-74f50651 ~]$ incus list
++------------+---------+-----------------------+------+-----------+-----------+
+|    NAME    |  STATE  |         IPV4          | IPV6 |   TYPE    | SNAPSHOTS |
++------------+---------+-----------------------+------+-----------+-----------+
+| pihole     | RUNNING | 192.168.20.144 (eth0) |      | CONTAINER | 0         |
++------------+---------+-----------------------+------+-----------+-----------+
+
+
+[void@rpi-74f50651 ~]$ incus exec pihole -- bash
+root@pihole:~#
+root@pihole:~# apt-get install -y wget
+root@pihole:~# wget -O basic-install.sh https://install.pi-hole.net
+root@pihole:~# chmod +x basic-install.sh
+root@pihole:~# ./basic-install.sh
+root@pihole:~# exit
+exit
+[void@rpi-74f50651 ~]$
+
+# that's it. network forwards are not necessary when using macvlan.
+# just point the clients DNS to the pihole address
+```
 
 ## Next, configure Pi-hole with unbound
 ---------------------------------------
@@ -60,14 +75,14 @@ recusrive DNS solution. [2]
 
 1. Install unbound 
 ```
-  incus exec pihole -- sudo apt install unbound
+  incus exec pihole -- apt install -y unbound
 ```
 
 2. Configure unbound
 ```
-incus exec pihole -- /bin/bash
-  vi /etc/unbound/unbound.conf.d/pi-hole.conf
+incus file push conf/unbound.conf pihole/etc/unbound/unbound.conf.d/pi-hole.conf 
 
+# create the file locally conf/unbound.conf with below contents:
   server:
 	# If no logfile is specified, syslog is used
 	# logfile: "/var/log/unbound/unbound.log"
@@ -138,15 +153,16 @@ incus exec pihole -- /bin/bash
 
 3. Start unbound and validate it is repsonding to queries
 ```
-  sudo service unbound restart
-  sudo service unbound status
-  dig pi-hole.net @127.0.0.1 -p 5335
+
+  incus exec pihole -- service unbound restart
+  incus exec pihole -- service unbound status
+  incus exec pihole -- dig pi-hole.net @127.0.0.1 -p 5335
 ```
 
 4. Test DNSSEC validation 
 ```
-  dig fail01.dnssec.works @127.0.0.1 -p 5335 # will fail
-  dig dnssec.works @127.0.0.1 -p 5335 # will work
+  incus exec pihole -- dig fail01.dnssec.works @127.0.0.1 -p 5335 # will fail/timeout
+  incus exec pihole -- dig dnssec.works @127.0.0.1 -p 5335 # will work
 ```
 
 5. Configure Pi-hole to point to unbound
@@ -155,7 +171,7 @@ In the pihole webUI, go to "Upstream DNS Servers" option and specify a custom
 DNS address `127.0.0.1#5335` to point to the local unbound instance. Deslect
 all other upstream providers. Click 'Save'.
 
-6. That's it. 
+6. That's it. Celebrate.
 
 [1]:
 [2]: https://docs.pi-hole.net/guides/dns/unbound/
